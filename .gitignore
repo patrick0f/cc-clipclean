@@ -1,0 +1,5 @@
+cleaner.log
+com.p.ccclipclean.plist
+__pycache__/
+*.pyc
+.DS_Store
