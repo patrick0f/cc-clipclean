@@ -12,6 +12,38 @@ HEADING = re.compile(r"^(\s*)#{1,6}\s")
 CODEY_INDENT = re.compile(r"^(\s{4,}|\t)")
 FENCE = re.compile(r"^\s*```")
 STRUCTURAL_ONLY = re.compile(r"^[^\w\s]+$")   # only punctuation/brackets (e.g. "}", "]);")
+DECORATION_CHARS = "▎▌│─╭╮╰╯⏺⎿✦"
+DECORATION_LEADING = re.compile(rf"^[ \t]*[{DECORATION_CHARS}]+[ \t]*")
+DECORATION_TRAILING = re.compile(rf"[ \t]*[{DECORATION_CHARS}]+[ \t]*$")
+DECORATION_INLINE = re.compile(rf"[ \t]*[{DECORATION_CHARS}]+[ \t]*")
+
+
+def strip_decoration(text: str) -> str:
+    if not any(c in text for c in DECORATION_CHARS):
+        return text
+    out = []
+    for line in text.split("\n"):
+        if any(c in line for c in DECORATION_CHARS):
+            line = DECORATION_LEADING.sub("", line)
+            line = DECORATION_TRAILING.sub("", line)
+            line = DECORATION_INLINE.sub(" ", line)
+            indent_len = len(line) - len(line.lstrip(" \t"))
+            indent, body = line[:indent_len], line[indent_len:]
+            body = re.sub(r"  +", " ", body)
+            line = indent + body
+        out.append(line.rstrip())
+    result: list[str] = []
+    prev_blank = False
+    for line in out:
+        if not line:
+            if prev_blank:
+                continue
+            result.append("")
+            prev_blank = True
+        else:
+            result.append(line)
+            prev_blank = False
+    return "\n".join(result).strip("\n")
 
 
 def is_hard_wrapped(text: str) -> bool:
@@ -117,8 +149,8 @@ FIXTURE_INPUT = (
 
 FIXTURE_EXPECTED = (
     "When copying text from a Claude Code session in Terminal.app, the clipboard "
-    "comes out wrapped in CC's box-drawing frame chars ( ╭─│ ╰─), tool-call "
-    "markers (⏺), and other TUI decoration.\n"
+    "comes out wrapped in CC's box-drawing frame chars ( ), tool-call "
+    "markers ( ), and other TUI decoration.\n"
     "\n"
     "Pasting anywhere else then requires manual cleanup. CC has a /copy command "
     "for the last message, but that's inconvenient when you want to copy a portion of a "
@@ -127,10 +159,11 @@ FIXTURE_EXPECTED = (
 
 
 def _daemon_pass(text: str) -> str:
-    """Simulate the full daemon flow: sniffer-gate + reformat."""
-    if not is_hard_wrapped(text):
-        return text
-    return reformat(text)
+    """Simulate the full daemon flow: decoration-strip + sniffer-gate + reformat."""
+    cleaned = strip_decoration(text)
+    if is_hard_wrapped(cleaned):
+        cleaned = reformat(cleaned)
+    return cleaned
 
 
 def run_tests() -> int:
@@ -230,6 +263,35 @@ def run_tests() -> int:
     )
     check_daemon("minimal json preserved", _daemon_pass(json_simple), json_simple)
 
+    # 11. CC TUI decoration chars stripped from line starts and inline
+    decorated = (
+        "low-commitment, gives you information:\n"
+        "\n"
+        "  ▎ \"Hi [name] — thanks for connecting! Curious what role you had in mind. I'm a sophomore at Yale studying CS, currently doing a lot of work in ▎  mobile development and AI applications. Happy to chat.\""
+    )
+    decorated_expected = (
+        "low-commitment, gives you information:\n"
+        "\n"
+        "\"Hi [name] — thanks for connecting! Curious what role you had in mind. I'm a sophomore at Yale studying CS, currently doing a lot of work in mobile development and AI applications. Happy to chat.\""
+    )
+    check_daemon("cc decoration stripped", _daemon_pass(decorated), decorated_expected)
+
+    # 12. Box-drawing frame chars stripped
+    framed = (
+        "╭─────────────╮\n"
+        "│ hello world │\n"
+        "╰─────────────╯"
+    )
+    framed_expected = "hello world"
+    check_daemon("box frame stripped", _daemon_pass(framed), framed_expected)
+
+    # 13. Terminal right-padding (trailing spaces + all-space line) stripped
+    padded = (
+        "  ▎ hello world      \n"
+        "                         "
+    )
+    check_daemon("trailing padding stripped", _daemon_pass(padded), "hello world")
+
     print()
     print(f"{'ALL PASS' if failures == 0 else f'{failures} FAILED'}")
     return failures
@@ -251,9 +313,11 @@ def main() -> None:
             continue
         last_count = count
         text = pb.stringForType_(NSStringPboardType)
-        if not text or not is_hard_wrapped(text):
+        if not text:
             continue
-        cleaned = reformat(text)
+        cleaned = strip_decoration(text)
+        if is_hard_wrapped(cleaned):
+            cleaned = reformat(cleaned)
         # cleaned = reformat_safe(text)  # uncomment for safe-mode fallback
         if cleaned == text:
             continue
